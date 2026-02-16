@@ -1,6 +1,9 @@
 [server]
 enableCORS = false
 enableXsrfProtection = false
+headless = true
 
 [browser]
+serverAddress = "pga-bb-draft-tool-the-scramble.streamlit.app"
 gatherUsageStats = false
+serverPort = 443
