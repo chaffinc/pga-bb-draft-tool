@@ -32,25 +32,21 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
 
-    /* DATAFRAME FONT SIZE - Make text inside dataframes smaller */
-    div[data-testid="stDataFrame"] table {
-        font-size: 0.75rem !important;
+    /* Reduce top padding - brings title closer to header */
+    .block-container {
+        padding-top: 3rem !important;
     }
-
-    div[data-testid="stDataFrame"] thead th {
-        font-size: 0.75rem !important;
-        padding: 0.2rem 0.4rem !important;
+    
+    /* Reduce title margin */
+    h1 {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
     }
-
-    div[data-testid="stDataFrame"] tbody td {
-        font-size: 0.75rem !important;
-        padding: 0.2rem 0.4rem !important;
-        line-height: 1.2 !important;
-    }
-
-    /* Make row height more compact */
-    div[data-testid="stDataFrame"] tbody tr {
-        height: 1.5rem !important;
+    
+    /* Reduce horizontal rule spacing */
+    hr {
+        margin-top: 0.5rem !important;
+        margin-bottom: 0.5rem !important;
     }
 
     /* Change selection color from red to blue - Updated selectors */
@@ -156,19 +152,29 @@ st.markdown("""
 # ============================================================
 # INITIALIZE SESSION STATE
 # ============================================================
-CSV_PATH = "PGA_BestBall.csv"
+CSV_PATHS = {
+    "The Scramble": "PGA_BestBall_TheScramble.csv",
+    "The Albatross": "PGA_BestBall_TheAlbatross.csv"
+}
 
 if 'initialized' not in st.session_state:
-    # Initialize model
-    model.init_model(CSV_PATH)
+    # Set default contest
+    if 'selected_contest' not in st.session_state:
+        st.session_state.selected_contest = "The Scramble"
+
+    # Initialize model with appropriate CSV
+    csv_path = CSV_PATHS[st.session_state.selected_contest]
+    model.init_model(csv_path)
+    model.set_contest_format(st.session_state.selected_contest)
+
     st.session_state.df = model.df
     st.session_state.event_cols = model.event_cols
-    
+
     # Initialize draft state
     st.session_state.drafted_players = []
     st.session_state.unavailable_players = []
     st.session_state.initialized = True
-    
+
     # Round multipliers
     st.session_state.r1_mult = model.ROUND_MULTIPLIERS['Round1']
     st.session_state.r2_mult = model.ROUND_MULTIPLIERS['Round2']
@@ -212,9 +218,52 @@ def format_coverage_table():
 # MAIN APP LAYOUT
 # ============================================================
 
-st.title("⛳ PGA Best Ball Live Draft Tool - The Scramble")
+# Add this right after the title, before the three columns
+st.title("⛳ PGA Best Ball Live Draft Tool")
 
-# Create three main columns
+# Contest selection - single line
+contest_col1, contest_col2 = st.columns([0.5, 3])
+
+with contest_col1:
+    # Initialize contest selection in session state
+    if 'selected_contest' not in st.session_state:
+        st.session_state.selected_contest = "The Scramble"
+
+    selected_contest = st.selectbox(
+        "Contest",
+        options=["The Scramble", "The Albatross"],
+        index=0 if st.session_state.selected_contest == "The Scramble" else 1,
+        key="contest_selector",
+        label_visibility="collapsed"
+    )
+
+    # If contest changed, reload model with new CSV
+    if selected_contest != st.session_state.selected_contest:
+        st.session_state.selected_contest = selected_contest
+
+        # Reload model with the correct CSV for this contest
+        csv_path = CSV_PATHS[selected_contest]
+        model.reload_model_with_csv(csv_path, selected_contest)
+
+        # Update session state with new data
+        st.session_state.df = model.df
+        st.session_state.event_cols = model.event_cols
+
+        # Reset draft state when switching contests
+        st.session_state.drafted_players = []
+        st.session_state.unavailable_players = []
+        st.session_state.model_ran = False
+        st.session_state.selected_recommendation = None
+
+        st.rerun()
+
+with contest_col2:
+    st.markdown(f"<div style='padding-top: 0.3rem;'>Drafting for: <strong>{selected_contest}</strong></div>",
+                unsafe_allow_html=True)
+
+st.markdown("---")
+
+# Create three main columns (rest of your code continues here)
 col1, col2, col3 = st.columns([2, 2, 2])
 
 # ============================================================
@@ -475,7 +524,7 @@ with col2:
     if st.session_state.drafted_players:
         team_df = pd.DataFrame({
             'Pick': range(1, len(st.session_state.drafted_players) + 1),
-            'Player': st.session_state.drafted_players
+            'Name': st.session_state.drafted_players
         })
         st.dataframe(
             team_df,
@@ -484,7 +533,7 @@ with col2:
             width='stretch',
             column_config={
                 "Pick": st.column_config.TextColumn("Pick", width="small"),
-                "Player": st.column_config.TextColumn("Player", width="medium"),
+                "Name": st.column_config.TextColumn("Name", width="medium"),
             }
         )
 
@@ -502,12 +551,19 @@ with col3:
     
     if st.session_state.drafted_players:
         coverage_df = format_coverage_table()
-        
+
+        # Determine columns to display based on contest
+        if st.session_state.selected_contest == "The Albatross":
+            # Show individual event columns instead of Event Impact
+            height = 178
+        else:  # The Scramble
+            height = 948
+
         # Create a styled display
         st.dataframe(
             coverage_df,
             hide_index=True,
-            height=948,
+            height=height,
             width='stretch',
             column_config={
                 "Event": st.column_config.TextColumn("Event", width="small"),
@@ -517,19 +573,6 @@ with col3:
                 "Remaining Picks": st.column_config.TextColumn("Remaining Picks", width="small"),
             }
         )
-
-        # Since row formatting is not allowed, there is no need for the legend.
-        # # Legend
-        # st.markdown("**Round Legend:**")
-        # legend_cols = st.columns(4)
-        # with legend_cols[0]:
-        #     st.markdown("🟦 Round 1")
-        # with legend_cols[1]:
-        #     st.markdown("🟪 Round 2")
-        # with legend_cols[2]:
-        #     st.markdown("🟩 Round 3")
-        # with legend_cols[3]:
-        #     st.markdown("🟫 Round 4")
     else:
         st.info("Draft players to see coverage")
 
@@ -544,46 +587,68 @@ if st.session_state.model_ran:
     round_number = len(st.session_state.drafted_players) + 1
 
     try:
-        # Get recommendations
-        recs = model.recommend_players_fast(
-            st.session_state.drafted_players,
-            st.session_state.unavailable_players,
-            round_number
-        )
+        # Call the appropriate recommendation function based on contest
+        if st.session_state.selected_contest == "The Albatross":
+            recs = model.recommend_players_fast_albatross(
+                st.session_state.drafted_players,
+                st.session_state.unavailable_players,
+                round_number
+            )
+        else:  # The Scramble
+            recs = model.recommend_players_fast(
+                st.session_state.drafted_players,
+                st.session_state.unavailable_players,
+                round_number
+            )
 
         if not recs.empty:
             # Format ADP column
             recs['ADP'] = recs['ADP'].apply(lambda x: "-" if x >= 999 else f"{x:.1f}")
 
-            # Rename columns for better display
-            display_recs = recs.rename(columns={
-                'Player': 'Name',
-                'Score': 'Points Added'
-            })
+            # Rename Score column
+            recs = recs.rename(columns={'Score': 'Points Added'})
 
             # Format Points Added
-            display_recs['Points Added'] = display_recs['Points Added'].apply(lambda x: f"{x:.1f}")
+            recs['Points Added'] = recs['Points Added'].apply(lambda x: f"{x:.1f}")
 
-            # Add selection to recommendations
+            # Rename Player to Name for consistency
+            recs = recs.rename(columns={'Player': 'Name'})
+
+            # Determine columns to display based on contest
+            if st.session_state.selected_contest == "The Albatross":
+                # Show individual event columns instead of Event Impact
+                column_config = {
+                    "Name": st.column_config.TextColumn("Name", width="small"),
+                    "Points Added": st.column_config.TextColumn("Points", width="small"),
+                    "ADP": st.column_config.TextColumn("ADP", width="small"),
+                    "Masters": st.column_config.NumberColumn("Masters", width="small", format="%.1f"),
+                    "PGA": st.column_config.NumberColumn("PGA", width="small", format="%.1f"),
+                    "US Open": st.column_config.NumberColumn("US Open", width="small", format="%.1f"),
+                    "Open": st.column_config.NumberColumn("Open", width="small", format="%.1f"),
+                }
+            else:  # The Scramble
+                column_config = {
+                    "Name": st.column_config.TextColumn("Name", width="small"),
+                    "Points Added": st.column_config.TextColumn("Points", width="small"),
+                    "ADP": st.column_config.TextColumn("ADP", width="small"),
+                    "Event Impact": st.column_config.TextColumn("Event Impact", width="large"),
+                }
+
+            # Display with appropriate column config
             rec_event = st.dataframe(
-                display_recs,
+                recs,
                 hide_index=True,
                 height=387,
                 width='stretch',
                 on_select="rerun",
                 selection_mode="single-row",
                 key=f"recommendations_selection_{st.session_state.get('rec_selection_counter', 0)}",
-                column_config={
-                    "Name": st.column_config.TextColumn("Name", width="small"),
-                    "Points Added": st.column_config.TextColumn("Points Added", width="small"),
-                    "ADP": st.column_config.TextColumn("ADP", width="small"),
-                    "Event Impact": st.column_config.TextColumn("Event Impact", width="large"),
-                }
+                column_config=column_config
             )
 
             # Store selected recommendation in session state
             selected_rec_indices = rec_event.selection.rows if rec_event.selection else []
-            new_selection = display_recs.iloc[selected_rec_indices[0]]['Name'] if selected_rec_indices else None
+            new_selection = recs.iloc[selected_rec_indices[0]]['Name'] if selected_rec_indices else None
 
             # Check if selection changed
             old_selection = st.session_state.get('selected_recommendation')
