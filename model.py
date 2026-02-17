@@ -159,6 +159,9 @@ def set_contest_format(contest_name: str) -> None:
     """
     global EVENT_TO_ROUND, event_cols, EVENT_MULT_ARR, EVENT_W_ARR, M
 
+    #print(f"🔧 set_contest_format called with: {contest_name}")  # DEBUG
+    #print(f"   Current event_cols length: {len(event_cols) if event_cols else 0}")
+
     if contest_name not in CONTEST_FORMATS:
         raise ValueError(f"Unknown contest: {contest_name}. Available: {list(CONTEST_FORMATS.keys())}")
 
@@ -189,6 +192,8 @@ def set_contest_format(contest_name: str) -> None:
             [float(EVENT_WEIGHTS.get(e, 0.0)) for e in event_cols],
             dtype=float
         )
+
+        #print(f"   New event_cols length: {len(event_cols)}")  # DEBUG
 
 def reload_model_with_csv(csv_path: str, contest_name: str) -> None:
     """
