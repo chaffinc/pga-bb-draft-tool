@@ -181,6 +181,19 @@ if 'initialized' not in st.session_state:
     st.session_state.r3_mult = model.ROUND_MULTIPLIERS['Round3']
     st.session_state.r4_mult = model.ROUND_MULTIPLIERS['Round4']
 
+# CRITICAL: After sleep/wake, session state persists but model.py module state is reset
+# Always validate that the model matches the selected contest
+if 'selected_contest' in st.session_state:
+    expected_events = set(model.CONTEST_FORMATS.get(st.session_state.selected_contest, {}).keys())
+    actual_events = set(model.event_cols) if model.event_cols else set()
+
+    # If model is uninitialized or wrong contest is loaded, reload it
+    if not actual_events or expected_events != actual_events:
+        csv_path = CSV_PATHS[st.session_state.selected_contest]
+        model.reload_model_with_csv(csv_path, st.session_state.selected_contest)
+        st.session_state.df = model.df
+        st.session_state.event_cols = model.event_cols
+
 if "model_ran" not in st.session_state:
     st.session_state.model_ran = False
 
@@ -239,13 +252,14 @@ with contest_col1:
 
     # If contest changed, reload model with new CSV
     if selected_contest != st.session_state.selected_contest:
+        # Update the contest FIRST
         st.session_state.selected_contest = selected_contest
 
         # Reload model with the correct CSV for this contest
         csv_path = CSV_PATHS[selected_contest]
         model.reload_model_with_csv(csv_path, selected_contest)
 
-        # Update session state with new data
+        # Update session state with new data - CRITICAL
         st.session_state.df = model.df
         st.session_state.event_cols = model.event_cols
 
@@ -391,6 +405,7 @@ with col1:
                 player_to_draft is not None
                 and player_to_draft not in st.session_state.drafted_players
                 and player_to_draft not in st.session_state.unavailable_players
+                and len(st.session_state.drafted_players) < model.TEAM_SIZE
         )
 
         if st.button("📝 Draft", disabled=not can_draft, width='stretch'):
@@ -583,10 +598,36 @@ with col3:
 st.markdown("---")
 st.subheader("Player Recommendations")
 
+# VALIDATE MODEL STATE BEFORE RUNNING RECOMMENDATIONS
+# This catches any state corruption that happened during the draft
+if 'selected_contest' in st.session_state and model.event_cols is not None:
+    expected_events = set(model.CONTEST_FORMATS[st.session_state.selected_contest].keys())
+    actual_events = set(model.event_cols)
+
+    # If events don't match, the model got corrupted - reload it
+    if expected_events != actual_events:
+        st.warning(f"⚠️ Model state mismatch detected. Reloading {st.session_state.selected_contest}...")
+        csv_path = CSV_PATHS[st.session_state.selected_contest]
+        model.reload_model_with_csv(csv_path, st.session_state.selected_contest)
+        st.session_state.df = model.df
+        st.session_state.event_cols = model.event_cols
+        st.rerun()
+
 if st.session_state.model_ran:
     round_number = len(st.session_state.drafted_players) + 1
 
     try:
+        # VALIDATION: Ensure model is loaded for correct contest
+        expected_events = set(model.CONTEST_FORMATS[st.session_state.selected_contest].keys())
+        actual_events = set(model.event_cols)
+
+        if expected_events != actual_events:
+            st.error(
+                f"⚠️ Model mismatch detected! Expected {len(expected_events)} events for "
+                f"{st.session_state.selected_contest}, but have {len(actual_events)} events loaded. "
+                f"Please refresh or reselect contest.")
+            st.stop()
+
         # Call the appropriate recommendation function based on contest
         if st.session_state.selected_contest == "The Albatross":
             recs = model.recommend_players_fast_albatross(
