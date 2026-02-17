@@ -20,6 +20,12 @@ DEFAULT_ALPHA = 0.5
 LAMBDA_PER_ROUND = 0.1
 TOP_N_RECOMMENDATIONS = 10
 
+# Add the Albatross-specific constants at the top with other configs
+# When marginal best-ball gains are tiny, switch to "raw projection" ranking (Albatross only)
+MARGINAL_SWITCH_EPS = 5.0
+FALLBACK_PENALTY_WEIGHT = 1.0
+FALLBACK_BONUS_WEIGHT = 1.0
+
 # ------------------------------------------------------------
 # CACHED STATE
 # ------------------------------------------------------------
@@ -37,37 +43,45 @@ URGENCY_MULTIPLIER = {
     "soon": 1.0
 }
 
-EVENT_TO_ROUND = {
-    "Sony": "Round1",
-    "Amex": "Round1",
-    "Farmers": "Round1",
-    "Phoenix": "Round1",
-    "Pebble": "Round1",
-    "Genesis": "Round1",
-    "Cognizant": "Round1",
-
-    "API": "Round2",
-    "Players": "Round2",
-    "Valspar": "Round2",
-    "Houston": "Round2",
-    "Valero": "Round2",
-    "Masters": "Round2",
-    "Heritage": "Round2",
-
-    "Miami": "Round3",
-    "Truist": "Round3",
-    "PGA": "Round3",
-    "CJ Cup": "Round3",
-    "Schwab": "Round3",
-    "Memorial": "Round3",
-
-    "Canadian": "Round4",
-    "US Open": "Round4",
-    "Travelers": "Round4",
-    "Deere": "Round4",
-    "Scottish": "Round4",
-    "Open": "Round4",
+CONTEST_FORMATS = {
+    "The Scramble": {
+        "Sony": "Round1",
+        "Amex": "Round1",
+        "Farmers": "Round1",
+        "Phoenix": "Round1",
+        "Pebble": "Round1",
+        "Genesis": "Round1",
+        "Cognizant": "Round1",
+        "API": "Round2",
+        "Players": "Round2",
+        "Valspar": "Round2",
+        "Houston": "Round2",
+        "Valero": "Round2",
+        "Masters": "Round2",
+        "Heritage": "Round2",
+        "Miami": "Round3",
+        "Truist": "Round3",
+        "PGA": "Round3",
+        "CJ Cup": "Round3",
+        "Schwab": "Round3",
+        "Memorial": "Round3",
+        "Canadian": "Round4",
+        "US Open": "Round4",
+        "Travelers": "Round4",
+        "Deere": "Round4",
+        "Scottish": "Round4",
+        "Open": "Round4",
+    },
+    "The Albatross": {
+        "Masters": "Round1",
+        "PGA": "Round2",
+        "US Open": "Round3",
+        "Open": "Round4",
+    }
 }
+
+# Replace the old EVENT_TO_ROUND with a function that gets the current contest
+EVENT_TO_ROUND = CONTEST_FORMATS["The Scramble"]  # Default
 
 ROUND_MULTIPLIERS = {
     "Round1": 1.15,     # Default: 1.15
@@ -137,6 +151,55 @@ def init_model(csv_path: str, alpha: float = DEFAULT_ALPHA) -> pd.DataFrame:
     EVENT_W_ARR = np.array([float(EVENT_WEIGHTS.get(e, 0.0)) for e in event_cols], dtype=float)
 
     return df
+
+def set_contest_format(contest_name: str) -> None:
+    """
+    Set the contest format for the model.
+    Must be called after init_model() to update event mappings and rebuild caches.
+    """
+    global EVENT_TO_ROUND, event_cols, EVENT_MULT_ARR, EVENT_W_ARR, M
+
+    if contest_name not in CONTEST_FORMATS:
+        raise ValueError(f"Unknown contest: {contest_name}. Available: {list(CONTEST_FORMATS.keys())}")
+
+    EVENT_TO_ROUND = CONTEST_FORMATS[contest_name]
+
+    # Update event_cols to only include events in this contest
+    if df is not None:
+        event_cols = [c for c in EVENT_TO_ROUND.keys() if c in df.columns]
+
+        # Clean the event columns for this contest (they might have '-' strings)
+        df[event_cols] = (
+            df[event_cols]
+            .replace('-', np.nan)
+            .apply(pd.to_numeric, errors='coerce')
+        )
+
+        # Rebuild the M matrix with only the relevant events (now properly cleaned)
+        M = df[event_cols].to_numpy(dtype=float)  # keeps NaN
+
+        # Rebuild EVENT_MULT_ARR with new event list
+        EVENT_MULT_ARR = np.array(
+            [ROUND_MULTIPLIERS[EVENT_TO_ROUND[e]] for e in event_cols],
+            dtype=float
+        )
+
+        # Rebuild EVENT_W_ARR with new event weights
+        EVENT_W_ARR = np.array(
+            [float(EVENT_WEIGHTS.get(e, 0.0)) for e in event_cols],
+            dtype=float
+        )
+
+def reload_model_with_csv(csv_path: str, contest_name: str) -> None:
+    """
+    Reload the entire model with a new CSV file and contest format.
+    This resets all cached data and rebuilds everything from scratch.
+    """
+    # Re-initialize with new CSV
+    init_model(csv_path)
+
+    # Set the contest format
+    set_contest_format(contest_name)
 
 def compute_event_weights(df, event_cols, alpha=0.5):
     avg_pts = df[event_cols].mean(skipna=True)
@@ -220,31 +283,6 @@ def roster_score(players, round_number, event_weights, urgency):
             bonus += URGENCY_MULTIPLIER[level]
 
     return points - lambda_r * penalty + bonus
-
-def recommend_players(drafted_players, unavailable_players, round_number):
-    urgency = classify_event_urgency(drafted_players)
-
-    available = [
-        p for p in df.index
-        if p not in drafted_players and p not in unavailable_players
-    ]
-
-    rows = []
-    for candidate in available:
-        roster = drafted_players + [candidate]
-        rows.append({
-            "Player": candidate,
-            "Score": roster_score(roster, round_number, EVENT_WEIGHTS, urgency),
-            "ADP": df.loc[candidate, "ADP"],
-            "Event Impact": player_event_impact(drafted_players, candidate, urgency)
-        })
-
-    return (
-        pd.DataFrame(rows)
-        .sort_values("Score", ascending=False)
-        .head(TOP_N_RECOMMENDATIONS)
-        .reset_index(drop=True)
-    )
 
 def recommend_players_fast(drafted_players, unavailable_players, round_number):
     """
@@ -356,6 +394,123 @@ def recommend_players_fast(drafted_players, unavailable_players, round_number):
             "ADP": float(ADP_ARR[cand_idx[j]]),
             "Event Impact": player_event_impact(drafted_players, name, urgency)
         })
+
+    return pd.DataFrame(rows).reset_index(drop=True)
+
+# New function for The Albatross with plateau detection
+def recommend_players_fast_albatross(drafted_players, unavailable_players, round_number):
+    """
+    Vectorized recommender for The Albatross.
+    Uses plateau detection and returns individual event projections.
+    """
+    if df is None or event_cols is None or M is None:
+        raise RuntimeError("Model not initialized. Call init_model(csv_path) first.")
+
+    # -------------------------
+    # Prep indices
+    # -------------------------
+    drafted_idx = np.array([NAME_TO_I[p] for p in drafted_players], dtype=int) if drafted_players else np.array([], dtype=int)
+    unavailable_set = set(unavailable_players) | set(drafted_players)
+
+    avail_names = [n for n in PLAYER_NAMES if n not in unavailable_set]
+    cand_idx = np.array([NAME_TO_I[n] for n in avail_names], dtype=int)
+
+    C = M[cand_idx, :]
+    plays = ~np.isnan(C)
+
+    # -------------------------
+    # Current roster per-event state
+    # -------------------------
+    if drafted_idx.size == 0:
+        drafted_M = np.empty((0, len(event_cols)), dtype=float)
+    else:
+        drafted_M = M[drafted_idx, :]
+
+    drafted_plays = ~np.isnan(drafted_M)
+    count = drafted_plays.sum(axis=0).astype(int)
+    deficit = np.maximum(0, MIN_PLAYERS_PER_EVENT - count)
+
+    threshold = np.zeros(len(event_cols), dtype=float)
+
+    if drafted_M.shape[0] > 0:
+        dm = np.where(np.isnan(drafted_M), -np.inf, drafted_M)
+
+        for e in range(len(event_cols)):
+            if count[e] >= MIN_PLAYERS_PER_EVENT:
+                col = dm[:, e]
+                top6 = np.partition(col, -MIN_PLAYERS_PER_EVENT)[-MIN_PLAYERS_PER_EVENT:]
+                threshold[e] = float(np.min(top6))
+            else:
+                threshold[e] = 0.0
+
+    # -------------------------
+    # Δpoints for candidates
+    # -------------------------
+    delta_event = np.where(
+        plays,
+        np.where(count < MIN_PLAYERS_PER_EVENT, C, np.maximum(0.0, C - threshold)),
+        0.0
+    )
+    delta_points = (delta_event * EVENT_MULT_ARR).sum(axis=1)
+
+    # -------------------------
+    # Fallback: projected total
+    # -------------------------
+    proj_total = np.nansum(C * EVENT_MULT_ARR, axis=1)
+
+    # -------------------------
+    # Penalty term
+    # -------------------------
+    lambda_r = LAMBDA_PER_ROUND * round_number
+
+    helps_deficit = plays & (deficit > 0)
+    penalty_improve = (helps_deficit * EVENT_W_ARR).sum(axis=1)
+    penalty_term = lambda_r * penalty_improve
+
+    # -------------------------
+    # Urgency bonus
+    # -------------------------
+    urgency = classify_event_urgency(drafted_players)
+    urgent_mask = np.array([urgency[e] == "urgent" for e in event_cols], dtype=bool)
+    soon_mask = np.array([urgency[e] == "soon" for e in event_cols], dtype=bool)
+
+    bonus = (
+        plays[:, urgent_mask].sum(axis=1) * URGENCY_MULTIPLIER["urgent"]
+        + plays[:, soon_mask].sum(axis=1) * URGENCY_MULTIPLIER["soon"]
+    )
+
+    # -------------------------
+    # Final score with plateau detection
+    # -------------------------
+    score_marginal = delta_points + penalty_term + bonus
+
+    if np.nanmax(delta_points) < MARGINAL_SWITCH_EPS:
+        score = proj_total + (FALLBACK_PENALTY_WEIGHT * penalty_term) + (FALLBACK_BONUS_WEIGHT * bonus)
+    else:
+        score = score_marginal
+
+    # -------------------------
+    # Build output with individual event columns
+    # -------------------------
+    order = np.argsort(-score)[:TOP_N_RECOMMENDATIONS]
+
+    rows = []
+    for j in order:
+        name = avail_names[j]
+        cand_event_vals = C[j, :]
+
+        row = {
+            "Player": name,
+            "Score": float(score[j]),
+            "ADP": float(ADP_ARR[cand_idx[j]]),
+        }
+
+        # Add one column per event
+        for ei, event in enumerate(event_cols):
+            v = cand_event_vals[ei]
+            row[event] = (None if np.isnan(v) else float(v))
+
+        rows.append(row)
 
     return pd.DataFrame(rows).reset_index(drop=True)
 
