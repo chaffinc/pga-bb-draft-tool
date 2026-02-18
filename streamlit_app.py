@@ -7,6 +7,14 @@ import streamlit as st
 import pandas as pd
 import model
 
+def reset_multipliers_to_defaults():
+    """Reset round multipliers to their default values in session state"""
+    st.session_state.r1_mult = 1.15
+    st.session_state.r2_mult = 1.05
+    st.session_state.r3_mult = 1.00
+    st.session_state.r4_mult = 0.95
+    st.session_state.multiplier_reset_counter = st.session_state.get('multiplier_reset_counter', 0) + 1
+
 # ============================================================
 # PAGE CONFIGURATION
 # ============================================================
@@ -176,10 +184,7 @@ if 'initialized' not in st.session_state:
     st.session_state.initialized = True
 
     # Round multipliers
-    st.session_state.r1_mult = model.ROUND_MULTIPLIERS['Round1']
-    st.session_state.r2_mult = model.ROUND_MULTIPLIERS['Round2']
-    st.session_state.r3_mult = model.ROUND_MULTIPLIERS['Round3']
-    st.session_state.r4_mult = model.ROUND_MULTIPLIERS['Round4']
+    reset_multipliers_to_defaults()
 
 # CRITICAL: After sleep/wake, session state persists but model.py module state is reset
 # Always validate that the model matches the selected contest
@@ -268,6 +273,9 @@ with contest_col1:
         st.session_state.unavailable_players = []
         st.session_state.model_ran = False
         st.session_state.selected_recommendation = None
+
+        # Reset multipliers to default when switching contests
+        reset_multipliers_to_defaults()
 
         st.rerun()
 
@@ -730,6 +738,7 @@ with st.sidebar:
         st.session_state.drafted_players = []
         st.session_state.unavailable_players = []
         st.session_state.model_ran = False
+        reset_multipliers_to_defaults()
         st.rerun()
     
     st.markdown("---")
